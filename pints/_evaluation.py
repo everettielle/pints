@@ -10,7 +10,7 @@
 #
 import gc
 import os
-import multiprocessing
+import multiprocess as multiprocessing
 import queue
 import sys
 import time
