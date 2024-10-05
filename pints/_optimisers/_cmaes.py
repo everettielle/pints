@@ -43,7 +43,7 @@ class CMAES(pints.PopulationBasedOptimiser):
         self._ready_for_tell = False
 
         # Estimated f(x_guessed)
-        self._f_guessed = float('inf')
+        self._f_guessed = np.inf
 
     def ask(self):
         """ See :meth:`Optimiser.ask()`. """
@@ -74,7 +74,7 @@ class CMAES(pints.PopulationBasedOptimiser):
     def f_best(self):
         """ See :meth:`Optimiser.f_best()`. """
         f = self._es.result.fbest if self._running else None
-        return float('inf') if f is None else f
+        return np.inf if f is None else f
 
     def f_guessed(self):
         """ See :meth:`Optimiser.f_guessed()`. """
@@ -84,7 +84,7 @@ class CMAES(pints.PopulationBasedOptimiser):
         """
         Initialises the optimiser for the first iteration.
         """
-        assert(not self._running)
+        assert not self._running
 
         # Import cma (may fail!)
         # Only the first time this is called in a running program incurs

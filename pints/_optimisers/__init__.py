@@ -409,7 +409,7 @@ class OptimisationController(object):
             self._function = function
         else:
             self._function = pints.ProbabilityBasedError(function)
-        del(function)
+        del function
 
         # Create optimiser
         if method is None:
@@ -455,6 +455,9 @@ class OptimisationController(object):
         self._unchanged_threshold = 1          # smallest significant f change
         self.set_max_unchanged_iterations()
 
+        # Maximum evaluations
+        self._max_evaluations = None
+
         # Threshold value
         self._threshold = None
 
@@ -469,6 +472,13 @@ class OptimisationController(object):
         ``None`` if the controller hasn't ran yet.
         """
         return self._evaluations
+
+    def max_evaluations(self):
+        """
+        Returns the maximum number of evaluations if this stopping criteria is
+        set, or ``None`` if it is not. See :meth:`set_max_evaluations`.
+        """
+        return self._max_evaluations
 
     def f_guessed_tracking(self):
         """
@@ -539,6 +549,7 @@ class OptimisationController(object):
         has_stopping_criterion = False
         has_stopping_criterion |= (self._max_iterations is not None)
         has_stopping_criterion |= (self._unchanged_max_iterations is not None)
+        has_stopping_criterion |= (self._max_evaluations is not None)
         has_stopping_criterion |= (self._threshold is not None)
         if not has_stopping_criterion:
             raise ValueError('At least one stopping criterion must be set.')
@@ -570,13 +581,13 @@ class OptimisationController(object):
             evaluator = pints.SequentialEvaluator(f)
 
         # Keep track of current best and best-guess scores.
-        fb = fg = float('inf')
+        fb = fg = np.inf
 
         # Internally we always minimise! Keep a 2nd value to show the user.
         fb_user, fg_user = (fb, fg) if self._minimising else (-fb, -fg)
 
         # Keep track of the last significant change
-        f_sig = float('inf')
+        f_sig = np.inf
 
         # Set up progress reporting
         next_message = 0
@@ -617,13 +628,16 @@ class OptimisationController(object):
 
             # Add fields to log
             max_iter_guess = max(self._max_iterations or 0, 10000)
-            max_eval_guess = max_iter_guess * pop_size
+            max_eval_guess = max(
+                self._max_evaluations or 0, max_iter_guess * pop_size)
             logger.add_counter('Iter.', max_value=max_iter_guess)
             logger.add_counter('Eval.', max_value=max_eval_guess)
             logger.add_float('Best')
             logger.add_float('Current')
             self._optimiser._log_init(logger)
-            logger.add_time('Time m:s')
+            # Note: No units shown in time field, for the reason why see
+            # https://github.com/pints-team/pints/issues/1467
+            logger.add_time('Time')
 
         # Start searching
         timer = pints.Timer()
@@ -690,6 +704,14 @@ class OptimisationController(object):
                     running = False
                     halt_message = ('No significant change for ' +
                                     str(unchanged_iterations) + ' iterations.')
+
+                # Maximum number of evaluations
+                if (self._max_evaluations is not None and
+                        evaluations >= self._max_evaluations):
+                    running = False
+                    halt_message = (
+                        'Maximum number of evaluations ('
+                        + str(self._max_evaluations) + ') reached.')
 
                 # Threshold value
                 halt = (self._threshold is not None
@@ -827,6 +849,21 @@ class OptimisationController(object):
         """
         self._log_to_screen = True if enabled else False
 
+    def set_max_evaluations(self, evaluations=None):
+        """
+        Adds a stopping criterion, allowing the routine to halt after the
+        given number of ``evaluations``.
+
+        This criterion is disabled by default. To enable, pass in any positive
+        integer. To disable again, use ``set_max_evaluations(None)``.
+        """
+        if evaluations is not None:
+            evaluations = int(evaluations)
+            if evaluations < 0:
+                raise ValueError(
+                    'Maximum number of evaluations cannot be negative.')
+        self._max_evaluations = evaluations
+
     def set_max_iterations(self, iterations=10000):
         """
         Adds a stopping criterion, allowing the routine to halt after the
@@ -947,10 +984,10 @@ def optimise(
         :class:`PSO`) or indirectly (for example as the center of a
         distribution in :class:`XNES`).
     sigma0
-        An optional initial standard deviation around ``x0``. Can be specified
-        either as a scalar value (one standard deviation for all coordinates)
-        or as an array with one entry per dimension. Not all methods will use
-        this information.
+        An optional initial standard deviation around ``x0``, or a parameter
+        representing the "scale" of the parameters. Can be specified either as
+        a scalar value (same value for all dimensions) or as an array with one
+        entry per dimension. Not all methods will use this information.
     boundaries
         An optional set of boundaries on the parameter space.
     transformation
@@ -1090,7 +1127,7 @@ class _CurveFitError(pints.ErrorMeasure):
         self.d = dimension
         self.x = x
         self.y = y
-        self.n = 1 / np.product(y.shape)    # Total number of points in data
+        self.n = 1 / np.prod(y.shape)    # Total number of points in data
 
     def n_parameters(self):
         return self.d

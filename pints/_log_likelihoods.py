@@ -8,6 +8,7 @@
 import pints
 import numpy as np
 import scipy.special
+import scipy.stats
 
 
 class AR1LogLikelihood(pints.ProblemLogLikelihood):
@@ -241,6 +242,304 @@ class CauchyLogLikelihood(pints.ProblemLogLikelihood):
         )
 
 
+class CensoredGaussianLogLikelihood(pints.ProblemLogLikelihood):
+    r""" Calculates a log-likelihood assuming independent Gaussian noise at
+    each time point, and that data above and below certain limits are censored.
+    In other words, any data values less than the lower limit are only known to
+    be less than or equal to it; and any values greater than the upper limit
+    are only known to be greater than or equal to it. This likelihood is useful
+    for censored data - see for instance [3]_. The parameter sigma represents
+    the standard deviation of the noise on each output.
+
+    For a noise level of ``sigma``, and left and right censoring (below the
+    ``lower`` limit cutoff and above the ``upper`` limit), the likelihood
+    becomes:
+
+    .. math::
+        \begin{align}
+                L(\theta, \sigma|\boldsymbol{x})
+                    = p(\boldsymbol{x} | \theta, \sigma)
+                    =& \prod_{\text{lower} < x_j < \text{upper}}
+                    \phi \left(\frac{x_j - f_j(\theta)}{\sigma} \right)
+                    \prod_{x_j = \text{lower}} \Phi \left(\frac{\text{lower} -
+                    f_j(\theta)}{\sigma} \right)
+                    \\ &\times   \prod_{x_j = \text{upper}} \left(1 -
+                    \Phi \left(\frac{\text{upper} - f_j(\theta)}{\sigma}
+                    \right) \right),
+        \end{align}
+
+    where :math:`x_j` is the sampled data at time :math:`j` and :math:`f_j` is
+    the simulated data at time :math:`j`. The functions :math:`\phi` and
+    :math:`\Phi` are the standard normal distribution probability density
+    function and cumulative distribution function respectively.
+
+    This leads to a log-likelihood of:
+
+    .. math::
+        \begin{align}
+        \log{L(\theta, \sigma|\boldsymbol{x})} =
+        &   \sum_{\text{lower} < x_j < \text{upper}}{ \left( -\frac{1}{2}
+        \log{2\pi}
+            -\log{\sigma} -\frac{1}{2\sigma^2}(x_j - f_j(\theta))^2 \right)} \\
+            &  + \sum_{x_j = \text{lower}} \log \left( \Phi
+            \left(\frac{\text{lower} - f_j(\theta)}{\sigma} \right) \right) \\
+            &    + \sum_{x_j = \text{upper}}  \log\left(1 - \Phi
+            \left(\frac{\text{upper} - f_j(\theta)}{\sigma} \right) \right)
+        \end{align}
+
+    For a system with :math:`n_o` outputs, this becomes
+
+    .. math::
+        \begin{align}
+        \log{L(\theta, \sigma|\boldsymbol{x})} =
+        &   \sum_{\substack{\text{lower}_i < x_{ij} < \text{upper}_i, \\ 1
+        \leq i \leq n_t, \\ 1 \leq j \leq n_o}}{ \left( -\frac{1}{2} \log{2\pi}
+            -\log{\sigma_{i}} -\frac{1}{2\sigma_{i}^2}(x_{ij} - f_j(t_i,
+            \theta ))^2 \right)} \\
+            & + \sum_{\substack{x_{ij} = \text{lower}_{i}, \\1 \leq i \leq n_t,
+            \\ 1 \leq j \leq n_o}} \log \left( \Phi
+            \left(\frac{\text{lower}_{i} - f_j(t_i, \theta)}{\sigma_{i}}
+            \right) \right) \\
+            & + \sum_{\substack{x_{ij} = \text{upper}_{i}, \\1 \leq i
+            \leq n_t, \\ 1 \leq j \leq n_o}}  \log\left(1 -
+            \Phi \left(\frac{\text{upper}_{i} - f_j(t_i, \theta)}{\sigma_{i}}
+            \right) \right)
+        \end{align}
+
+    Extends :class:`ProblemLogLikelihood`.
+
+    Parameters
+    ----------
+    problem
+        A :class:`SingleOutputProblem` or :class:`MultiOutputProblem`.
+    lower
+        The lower limit for censoring.
+    upper
+        The upper limit for censoring.
+
+    References
+    ----------
+    .. [3] Beal, S. L. (2001). Ways to fit a PK model with some data below the
+           quantification limit. Journal of pharmacokinetics and
+           pharmacodynamics 28, pp. 481-504.
+
+    """
+
+    def __init__(self, problem, lower=None, upper=None):
+        super(CensoredGaussianLogLikelihood, self).__init__(problem)
+
+        # Get number of times, number of outputs
+        self._nt = len(self._times)
+        self._no = problem.n_outputs()
+
+        # Add parameters to problem
+        self._n_parameters = problem.n_parameters() + self._no
+
+        # Convert the lower and upper limits to the correct type
+        a = self._convert_type(lower, limit_type="lower")
+        b = self._convert_type(upper, limit_type="upper")
+
+        if len(a) != self._no:
+            raise ValueError(
+                'Lower limit must be a ' +
+                ' scalar or a vector of length n_outputs.')
+
+        if len(b) != self._no:
+            raise ValueError(
+                'Upper limit must be a ' +
+                ' scalar or a vector of length n_outputs.')
+
+        diff = b - a
+        if np.any(diff <= 0):
+            raise ValueError('Upper limit ' +
+                             'must exceed lower limit.')
+        self._a = a
+        self._b = b
+
+        # Define the conditions for whether a point is lower censored,
+        # upper censored and not censored
+        self._lower_condition = self._values <= self._a
+        self._upper_condition = self._values >= self._b
+        self._not_censored_condition = (self._a < self._values
+                                        ) & (self._values < self._b)
+
+        # Number of points that aren't censored (for each observation
+        # in the multioutput case)
+        self._n_not_censored = np.sum(self._not_censored_condition, axis=0)
+
+    def _convert_type(self, limit, limit_type="lower"):
+
+        # If no lower or upper limit is supplied set it equal to
+        # -/+ infinity
+        if limit is None:
+            if limit_type == "lower":
+                limit = - np.inf
+            elif limit_type == "upper":
+                limit = np.inf
+
+        # Convert the limit to an object of the correct type
+        if np.isscalar(limit):
+            limit = np.ones(self._no) * float(limit)
+        else:
+            limit = pints.vector(limit)
+
+        return limit
+
+    def __call__(self, x):
+        theta = np.asarray(x[:-self._no])
+        sigma = np.asarray(x[-self._no:])
+        if any(sigma <= 0):
+            return -np.inf
+
+        # Evaluate the problem output - do this only once as this is usually
+        # the most expensive step in inference, especially for ODE models
+        output = self._problem.evaluate(theta)
+
+        squared_error = np.sum((self._values - output)**2,
+                               axis=0, where=self._not_censored_condition)
+
+        # Calculate part of the likelihood corresponding to the censored data
+        lower_censored_sum = np.sum(np.log(
+            scipy.stats.norm.cdf(x=self._a, loc=output, scale=sigma)),
+            where=self._lower_condition)
+        upper_censored_sum = np.sum(
+            np.log(1 - scipy.stats.norm.
+                   cdf(x=self._b, loc=output, scale=sigma)),
+            where=self._upper_condition)
+
+        # Calculate part of the likelihood corresponding to
+        # the data that isn't censored
+        non_censored_sum = np.sum(- 0.5 * self._n_not_censored *
+                                  np.log(2 * np.pi) -
+                                  self._n_not_censored * np.log(sigma)
+                                  - squared_error / (2 * sigma**2))
+
+        return lower_censored_sum + upper_censored_sum + non_censored_sum
+
+    def evaluateS1(self, x):
+        """ See :meth:`LogPDF.evaluateS1()`. """
+        theta = np.asarray(x[:-self._no])
+        sigma = np.asarray(x[-self._no:])
+
+        # Calculate log-likelihood
+        L = self.__call__(x)
+        if np.isneginf(L):
+            return L, np.tile(np.nan, self._n_parameters)
+
+        # Evaluate, and get residuals
+        y, dy = self._problem.evaluateS1(theta)
+
+        # Reshape dy, in case we're working with a single-output problem
+        dy = dy.reshape(self._nt, self._no, self._n_parameters - self._no)
+
+        # Note: Must be (data - simulation), sign now matters!
+        r = self._values - y
+
+        # Evaluate the problem output - do this only once as this is usually
+        # the most expensive step in inference, especially for ODE models
+        output = self._problem.evaluate(theta)
+
+        # Make conditions for where data isn't censored and is lower/upper
+        # censored into 3D arrays
+
+        if self._values.ndim == 1:
+            where_condition = np.reshape(
+                self._not_censored_condition,
+                newshape=(np.shape(self._not_censored_condition)[0], 1, 1))
+            lower_where_condition = np.reshape(
+                self._lower_condition,
+                newshape=(np.shape(self._lower_condition)[0], 1, 1))
+            upper_where_condition = np.reshape(
+                self._upper_condition,
+                newshape=(np.shape(self._upper_condition)[0], 1, 1))
+        else:
+            where_condition = np.repeat(
+                self._not_censored_condition[:, :, np.newaxis],
+                np.shape(self._not_censored_condition)[-1], axis=2)
+            lower_where_condition = np.repeat(
+                self._lower_condition[:, :, np.newaxis],
+                np.shape(self._lower_condition)[-1], axis=2)
+            upper_where_condition = np.repeat(
+                self._upper_condition[:, :, np.newaxis],
+                np.shape(self._upper_condition)[-1], axis=2)
+
+        # 1. Parts of the derivative corresponding to the data that
+        # isn't censored
+
+        # Calculate derivatives in the model parameters
+        inner_deriv = (r.T * dy.T).T
+        inner_sum = np.sum(inner_deriv, where=where_condition, axis=0)
+        not_censored_dL = np.sum((sigma**(-2.0) * inner_sum.T).T, axis=0)
+
+        # Calculate derivative wrt sigma
+        not_censored_dsigma = -self._n_not_censored / sigma + sigma**(-3.0) *\
+            np.sum((self._values - y)**2, axis=0,
+                   where=self._not_censored_condition)
+
+        # 2. Parts of the derivative corresponding to the data that is
+        # censored
+
+        # Use pdf(x-loc/scale) rather than pdf(x, loc, scale) as
+        # pdf(x-loc/scale)= pdf(x, loc, scale) * scale
+        # (whereas cdf(x-loc/scale) = cdf(x, loc, scale))
+
+        lower_pdf = scipy.stats.norm.pdf((self._a - output) / sigma)
+        lower_cdf = scipy.stats.norm.cdf(x=self._a, loc=output,
+                                         scale=sigma)
+
+        upper_pdf = scipy.stats.norm.pdf((self._b - output) / sigma)
+        upper_cdf = scipy.stats.norm.cdf(x=self._b, loc=output,
+                                         scale=sigma)
+
+        # Calculate derivatives in the model parameters
+        lower_numerator = lower_pdf.T * dy.T
+        lower_denominator = lower_cdf.T
+        lower_inner_val = (lower_numerator / lower_denominator).T
+        lower_inner_sum = np.sum(lower_inner_val, where=lower_where_condition,
+                                 axis=0)
+        lower_censored_dL = -np.sum((sigma**(-1) * lower_inner_sum).T, axis=0)
+
+        upper_numerator = upper_pdf.T * dy.T
+        upper_denominator = 1 - upper_cdf.T
+        upper_inner_val = (upper_numerator / upper_denominator).T
+        upper_inner_sum = np.sum(upper_inner_val, where=upper_where_condition,
+                                 axis=0)
+        upper_censored_dL = np.sum((sigma**(-1) * upper_inner_sum).T, axis=0)
+
+        # Calculate derivative wrt sigma
+        lower_dsigma_inner_val = (lower_pdf.T *
+                                  (self._values - y).T) / (lower_cdf.T)
+        lower_censored_dsigma = - sigma**(-2) *\
+            np.sum(lower_dsigma_inner_val.T,
+                   where=self._lower_condition, axis=0).T
+
+        upper_dsigma_inner_val = (upper_pdf.T *
+                                  (self._values - y).T) / (1 - upper_cdf.T)
+        upper_censored_dsigma = sigma**(-2) *\
+            np.sum(upper_dsigma_inner_val.T,
+                   where=self._upper_condition, axis=0).T
+
+        dL = not_censored_dL + lower_censored_dL + upper_censored_dL
+        dsigma = not_censored_dsigma + lower_censored_dsigma + \
+            upper_censored_dsigma
+
+        dL = np.concatenate((dL, np.array(list(dsigma))))
+
+        # Return
+        return L, dL
+
+    def print_censored_values(self):
+
+        # Print data and values that are censored
+        print("The data are {}. \n The lower censored values"
+              " are {}. \n The upper censored values"
+              " are {}.".format(self._values,
+                                np.extract(self._lower_condition,
+                                           self._values),
+                                np.extract(self._upper_condition,
+                                           self._values)))
+
+
 class ConstantAndMultiplicativeGaussianLogLikelihood(
         pints.ProblemLogLikelihood):
     r"""
@@ -465,21 +764,23 @@ class ConstantAndMultiplicativeGaussianLogLikelihood(
         return L, dL
 
 
-class GaussianIntegratedUniformLogLikelihood(pints.ProblemLogLikelihood):
+class GaussianIntegratedLogUniformLogLikelihood(pints.ProblemLogLikelihood):
     r"""
     Calculates a log-likelihood assuming independent Gaussian-distributed noise
-    at each time point where :math:`\sigma\sim U(a,b)` has been integrated out
-    of the joint posterior of :math:`p(\theta,\sigma|X)`,
+    at each time point where :math:`p(\sigma)\propto 1/\sigma` has been
+    integrated out of the joint posterior of :math:`p(\theta,\sigma|X)`,
 
     .. math::
         \begin{align} p(\theta|X) &= \int_{0}^{\infty} p(\theta, \sigma|X)
         \mathrm{d}\sigma\\
         &\propto \int_{0}^{\infty} p(X|\theta, \sigma) p(\theta, \sigma)
-        \mathrm{d}\sigma,\end{align}
+        \mathrm{d}\sigma.\end{align}
 
     Note that this is exactly the same statistical model as
     :class:`pints.GaussianLogLikelihood` with a uniform prior on
-    :math:`\sigma`.
+    :math:`\sigma` in the logarithmic transformed space.
+    This is also known as Jeffrey's prior, as the standard deviation is a scale
+    parameter, as discussed here: https://doi.org/10.1093/gji/ggaa168.
 
     A possible advantage of this log-likelihood compared with using a
     :class:`pints.GaussianLogLikelihood`, is that it has one fewer parameters
@@ -490,7 +791,88 @@ class GaussianIntegratedUniformLogLikelihood(pints.ProblemLogLikelihood):
     The log-likelihood is given in terms of the sum of squared errors:
 
     .. math::
-        SSE = \sum_{i=1}^n (f_i(\theta) - y_i)^2
+        SSE = \sum_{i=1}^n (f_i(\theta) - y_i)^2,
+
+    and is given up to a normalisation constant by:
+
+    .. math::
+        \begin{align}
+        \text{log} L =
+            & - n / 2 \text{log}(SSE) \\
+            & - (n - 2) / 2 \text{log}(2) \\
+            & + \text{log}\left[\Gamma(n / 2)\right],
+        \end{align}
+
+    where :math:`\Gamma(a)` is the incomplete gamma function.
+
+    This log-likelihood is inherently a Bayesian method since it assumes a
+    uniform prior on :math:`\sigma` _in the logarithmic transformed space.
+    However using this likelihood in optimisation routines should yield the
+    same estimates as the full :class:`pints.GaussianLogLikelihood`.
+
+    Extends :class:`ProblemLogLikelihood`.
+
+    Parameters
+    ----------
+    problem
+        A :class:`SingleOutputProblem` or :class:`MultiOutputProblem`.
+    """
+
+    def __init__(self, problem):
+        super(GaussianIntegratedLogUniformLogLikelihood,
+              self).__init__(problem)
+
+        # Get number of times, number of outputs
+        self._nt = len(self._times)
+        self._no = problem.n_outputs()
+
+        # Add parameters to problem
+        self._n_parameters = problem.n_parameters()
+
+        # Pre-calculate
+        n = self._nt
+        self._n_over_2 = n / 2
+        self._log_gamma = scipy.special.gammaln(self._n_over_2)
+        self._constant_1 = -np.log(2) * (n - 2) / 2
+        self._constant = self._constant_1 + self._log_gamma
+
+    def __call__(self, x):
+        error = self._values - self._problem.evaluate(x)
+        sse = np.sum(error**2, axis=0)
+
+        # Calculate
+        sse = pints.vector(sse)
+        return np.sum(self._constant - self._n_over_2 * np.log(sse))
+
+
+class GaussianIntegratedUniformLogLikelihood(pints.ProblemLogLikelihood):
+    r"""
+    Calculates a log-likelihood assuming independent Gaussian-distributed noise
+    at each time point where :math:`\sigma\sim U(a,b)` has been integrated out
+    of the joint posterior of :math:`p(\theta,\sigma|X)` in the same way as in
+    :class:`pints.GaussianIntegratedLogUniformLogLikelihood`,
+
+    .. math::
+        \begin{align} p(\theta|X) &= \int_{0}^{\infty} p(\theta, \sigma|X)
+        \mathrm{d}\sigma\\
+        &\propto \int_{0}^{\infty} p(X|\theta, \sigma) p(\theta, \sigma)
+        \mathrm{d}\sigma.\end{align}
+
+    Note that this is exactly the same statistical model as
+    :class:`pints.GaussianLogLikelihood` with a uniform prior on
+    :math:`\sigma`.
+
+    Similar to :class:`pints.GaussianIntegratedLogUniformLogLikelihood`, a
+    possible advantage of this log-likelihood compared with using a
+    :class:`pints.GaussianLogLikelihood`, is that it has one fewer parameters
+    (:math:`sigma`) which may speed up convergence to the posterior
+    distribution, especially for multi-output problems which will have
+    ``n_outputs`` fewer parameter dimensions.
+
+    The log-likelihood is given in terms of the sum of squared errors:
+
+    .. math::
+        SSE = \sum_{i=1}^n (f_i(\theta) - y_i)^2,
 
     and is given up to a normalisation constant by:
 
@@ -501,11 +883,11 @@ class GaussianIntegratedUniformLogLikelihood(pints.ProblemLogLikelihood):
             & - \text{log}(2 (b - a) \sqrt(2)) \\
             & + (1 / 2 - n / 2) \text{log}(SSE) \\
             & + \text{log}\left[\Gamma((n - 1) / 2, \frac{SSE}{2 b^2}) -
-                \Gamma((n - 1) / 2, \frac{SSE}{2 a^2}) \right]
+                \Gamma((n - 1) / 2, \frac{SSE}{2 a^2}) \right],
         \end{align}
 
     where :math:`\Gamma(u,v)` is the upper incomplete gamma function as defined
-    here: https://en.wikipedia.org/wiki/Incomplete_gamma_function
+    here: https://en.wikipedia.org/wiki/Incomplete_gamma_function.
 
     This log-likelihood is inherently a Bayesian method since it assumes a
     uniform prior on :math:`\sigma\sim U(a,b)`. However using this likelihood
@@ -790,6 +1172,123 @@ class KnownNoiseLogLikelihood(GaussianKnownSigmaLogLikelihood):
         super(KnownNoiseLogLikelihood, self).__init__(problem, sigma)
 
 
+class LogNormalLogLikelihood(pints.ProblemLogLikelihood):
+    r"""
+    Calculates a log-likelihood assuming independent log-normal noise at each
+    time point, and adds a parameter representing the standard deviation
+    (sigma) of the noise on the log scale for each output.
+
+    Specifically, the sampling distribution takes the form:
+
+    .. math::
+        y(t) \sim \text{log-Normal}(\log f(\theta, t), \sigma)
+
+    which can alternatively be written:
+
+    .. math::
+        \log y(t) \sim \text{Normal}(\log f(\theta, t), \sigma)
+
+    Important to note is that:
+
+    .. math::
+        \mathbb{E}(y(t)) = f(\theta, t) \exp(\sigma^2 / 2)
+
+    As such, the optional parameter `mean_adjust` (if true) adjusts the mean of
+    the distribution so that its expectation is :math:`f(\theta, t)`. This
+    shifted distribution is of the form:
+
+    .. math::
+        y(t) \sim \text{log-Normal}(\log f(\theta, t) - \sigma^2/2, \sigma)
+
+    Extends :class:`ProblemLogLikelihood`.
+
+    Parameters
+    ----------
+    problem
+        A :class:`SingleOutputProblem` or :class:`MultiOutputProblem`. For a
+        single-output problem a single parameter is added, for a multi-output
+        problem ``n_outputs`` parameters are added.
+    mean_adjust
+        A Boolean. Adjusts the distribution so that its mean corresponds to the
+        function value. By default, this parameter if False.
+    """
+
+    def __init__(self, problem, mean_adjust=False):
+        super(LogNormalLogLikelihood, self).__init__(problem)
+
+        # Get number of times, number of outputs
+        self._nt = len(self._times)
+        self._no = problem.n_outputs()
+
+        # Add parameters to problem
+        self._n_parameters = problem.n_parameters() + self._no
+
+        # Pre-calculate parts
+        self._logn = 0.5 * self._nt * np.log(2 * np.pi)
+
+        # For a log-normal sampling distribution any data points being below
+        # zero would mean that the log-likelihood is always -infinity
+        vals = np.asarray(self._values)
+        if np.any(vals <= 0):
+            raise ValueError('All data points must exceed zero.')
+        self._log_values = np.log(self._values)
+
+        self._mean_adjust = mean_adjust
+
+    def __call__(self, x):
+        sigma = np.asarray(x[-self._no:])
+        if any(sigma < 0):
+            return -np.inf
+
+        soln = self._problem.evaluate(x[:-self._no])
+        if np.any(soln < 0):
+            return -np.inf
+
+        error = np.log(self._values) - np.log(soln)
+        if self._mean_adjust:
+            error += 0.5 * sigma**2
+        return np.sum(- self._logn - self._nt * np.log(sigma)
+                      - np.sum(self._log_values, axis=0)
+                      - np.sum(error**2, axis=0) / (2 * sigma**2))
+
+    def evaluateS1(self, x):
+        """ See :meth:`LogPDF.evaluateS1()`. """
+        # Calculate log-likelihood and when log-prob is infinite, gradients are
+        # not defined
+        L = self.__call__(x)
+        if L == -np.inf:
+            return L, np.tile(np.nan, self._n_parameters)
+
+        sigma = np.asarray(x[-self._no:])
+
+        # Evaluate, and get residuals
+        y, dy = self._problem.evaluateS1(x[:-self._no])
+
+        # Reshape dy, in case we're working with a single-output problem
+        dy = dy.reshape(self._nt, self._no, self._n_parameters - self._no)
+
+        # Note: Must be (np.log(data) - simulation), sign matters now since it
+        # must match that of the partial derivative below
+        error = np.log(self._values) - np.log(y)
+        if self._mean_adjust:
+            error += 0.5 * sigma**2
+
+        # Calculate derivatives in the model parameters
+        dL = np.sum(
+            (sigma**(-2.0) * np.sum((error.T * dy.T / y.T).T, axis=0).T).T,
+            axis=0)
+
+        # Calculate derivative wrt sigma
+        dsigma = -self._nt / sigma + sigma**(-3.0) * np.sum(error**2, axis=0)
+        if self._mean_adjust:
+            dsigma -= 1 / sigma * np.sum(error, axis=0)
+
+        dL = np.concatenate((dL, np.array(list(dsigma))))
+
+        # Return
+        return L, dL
+
+
 class MultiplicativeGaussianLogLikelihood(pints.ProblemLogLikelihood):
     r"""
     Calculates the log-likelihood for a time-series model assuming a
@@ -920,7 +1419,7 @@ class ScaledLogLikelihood(pints.ProblemLogLikelihood):
         self._log_likelihood = log_likelihood
 
         # Pre-calculate parts
-        self._f = 1.0 / np.product(self._values.shape)
+        self._f = 1.0 / np.prod(self._values.shape)
 
     def __call__(self, x):
         return self._f * self._log_likelihood(x)
@@ -1014,6 +1513,6 @@ class UnknownNoiseLogLikelihood(GaussianLogLikelihood):
         # Deprecated on 2019-02-06
         import warnings
         warnings.warn(
-            'The class `pints.KnownNoiseLogLikelihood` is deprecated.'
+            'The class `pints.UnknownNoiseLogLikelihood` is deprecated.'
             ' Please use `pints.GaussianLogLikelihood` instead.')
         super(UnknownNoiseLogLikelihood, self).__init__(problem)

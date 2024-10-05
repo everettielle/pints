@@ -100,6 +100,7 @@ from ._log_priors import (
     HalfCauchyLogPrior,
     InverseGammaLogPrior,
     LogNormalLogPrior,
+    LogUniformLogPrior,
     MultivariateGaussianLogPrior,
     NormalLogPrior,
     StudentTLogPrior,
@@ -114,11 +115,14 @@ from ._log_likelihoods import (
     AR1LogLikelihood,
     ARMA11LogLikelihood,
     CauchyLogLikelihood,
+    CensoredGaussianLogLikelihood,
     ConstantAndMultiplicativeGaussianLogLikelihood,
+    GaussianIntegratedLogUniformLogLikelihood,
     GaussianIntegratedUniformLogLikelihood,
     GaussianKnownSigmaLogLikelihood,
     GaussianLogLikelihood,
     KnownNoiseLogLikelihood,
+    LogNormalLogLikelihood,
     MultiplicativeGaussianLogLikelihood,
     ScaledLogLikelihood,
     StudentTLogLikelihood,
@@ -130,6 +134,7 @@ from ._log_likelihoods import (
 #
 from ._boundaries import (
     Boundaries,
+    ComposedBoundaries,
     LogPDFBoundaries,
     RectangularBoundaries,
 )
@@ -156,6 +161,7 @@ from ._evaluation import (
     Evaluator,
     ParallelEvaluator,
     SequentialEvaluator,
+    MultiSequentialEvaluator,
 )
 
 
@@ -171,9 +177,11 @@ from ._optimisers import (
     Optimiser,
     PopulationBasedOptimiser,
 )
+from ._optimisers._adam import Adam
 from ._optimisers._cmaes import CMAES
 from ._optimisers._cmaes_bare import BareCMAES
 from ._optimisers._gradient_descent import GradientDescent
+from ._optimisers._irpropmin import IRPropMin
 from ._optimisers._nelder_mead import NelderMead
 from ._optimisers._pso import PSO
 from ._optimisers._snes import SNES
@@ -237,9 +245,19 @@ from ._nested._ellipsoid import NestedEllipsoidSampler
 
 
 #
+# ABC
+#
+from ._abc import ABCSampler
+from ._abc import ABCController
+from ._abc._abc_rejection import RejectionABC
+from ._abc._abc_smc import ABCSMC
+
+
+#
 # Sampling initialising
 #
 from ._sample_initial_points import sample_initial_points
+
 
 #
 # Transformations
@@ -256,6 +274,8 @@ from ._transformation import (
     TransformedErrorMeasure,
     TransformedLogPDF,
     TransformedLogPrior,
+    TransformedRectangularBoundaries,
+    UnitCubeTransformation,
 )
 
 
@@ -267,4 +287,4 @@ from . import noise
 #
 # Remove any imported modules, so we don't expose them as part of pints
 #
-del(os, sys)
+del os, sys
