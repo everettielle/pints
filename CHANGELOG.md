@@ -2,7 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+
 ## Unreleased
+
+### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
+
+## [0.5.1] - 2025-09-26
 
 ### Added
 - [#1527](https://github.com/pints-team/pints/pull/1527) Added a `ComposedBoundaries` class that lets you compose multiple `Boundaries` classes into a higher dimensional one.
@@ -10,12 +20,13 @@ All notable changes to this project will be documented in this file.
 - [#1505](https://github.com/pints-team/pints/pull/1505) Added notes to `ErrorMeasure` and `LogPDF` to say parameters must be real and continuous.
 - [#1499](https://github.com/pints-team/pints/pull/1499) Added a log-uniform prior class.
 ### Changed
+- [#1698](https://github.com/pints-team/pints/pull/1698) CMA-ES now raises a more informative exception when an unsupported 1-d optimisation is attempted.
 - [#1503](https://github.com/pints-team/pints/pull/1503) Stopped showing time units in controller logs, because the units change depending on the output type (see #1467).
-### Deprecated
-### Removed
+- [#1699](https://github.com/pints-team/pints/pull/1699) PINTS is no longer tested on Python 3.7. Testing for Python 3.12 and 3.13 has been added.
 ### Fixed
 - [#1517](https://github.com/pints-team/pints/pull/1517) Fixed a major bug in the covariance matrix update for xNES.
 - [#1505](https://github.com/pints-team/pints/pull/1505) Fixed issues with toy problems that accept invalid inputs.
+- [#1497](https://github.com/pints-team/pints/pull/1497) Fixed deprecation warning of `np.product` globally in PINTS.
 
 
 ## [0.5.0] - 2023-07-27
@@ -49,7 +60,6 @@ All notable changes to this project will be documented in this file.
 - [#1424](https://github.com/pints-team/pints/pull/1424) Removed the `TriangleWaveTransform` class previously used in some optimisers.
 
 ### Fixed
-- [#1497](https://github.com/pints-team/pints/pull/1497) Fixed deprecation warning of `np.product` globally in pints.
 - [#1457](https://github.com/pints-team/pints/pull/1457) Fixed typo in deprecation warning for `UnknownNoiseLikelihood`.
 - [#1455](https://github.com/pints-team/pints/pull/1455) The `s` and `inv_s` properties of `ScalingTransformation` have been replaced with private properties `_s` and `_inv_s`.
 - [#1450](https://github.com/pints-team/pints/pull/1450) Made `TransformedBoundaries` consistent with `Boundaries` by removing `range()` and adding `sample()`.
